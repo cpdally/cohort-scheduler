@@ -12,4 +12,4 @@ license = {text = "MIT"}
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/yourusername/cohort-scheduler"
+Homepage = "https://github.com/cpdally/cohort-scheduler"

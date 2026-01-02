@@ -307,7 +307,7 @@ def schedule(
     max_groups: int = 999,
     num_iterations: int = 10000,
     time_increment: int = 30,
-    randomness: float = 0.5,
+    randomness: float = 1.0,
     use_if_needed: bool = True,
     balance: bool = True,
     facilitator_ids: set = None,

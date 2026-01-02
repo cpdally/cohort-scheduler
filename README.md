@@ -5,13 +5,13 @@ Stochastic greedy scheduling algorithm for matching people into cohorts based on
 ## Installation
 
 ```bash
-pip install git+https://github.com/yourusername/cohort-scheduler.git
+pip install git+https://github.com/cpdally/cohort-scheduler.git
 ```
 
 Or clone and install locally:
 
 ```bash
-git clone https://github.com/yourusername/cohort-scheduler.git
+git clone https://github.com/cpdally/cohort-scheduler.git
 cd cohort-scheduler
 pip install -e .
 ```
@@ -84,7 +84,7 @@ Main function. Options:
 - `max_people`: Maximum per group (default: 8)
 - `num_iterations`: Random iterations to try (default: 10000)
 - `time_increment`: Time slot granularity in minutes (default: 30)
-- `randomness`: 0-1, how much randomness (default: 0.5)
+- `randomness`: 0-1, how much randomness (default: 1.0)
 - `use_if_needed`: Include "if needed" availability (default: True)
 - `balance`: Balance group sizes after scheduling (default: True)
 - `facilitator_ids`: Set of facilitator IDs (optional)
