@@ -41,6 +41,8 @@ class SchedulingResult:
     groups: list
     unassigned: list
     score: int
+    quality_score: float
+    if_needed_count: int
     iterations_run: int
     best_iteration: int
 
@@ -147,17 +149,42 @@ def find_meeting_times(
     time_increment: int = 30,
     use_if_needed: bool = True
 ) -> list:
-    """Find all possible meeting time slots for a group of people."""
+    """
+    Find all possible meeting time slots for a group of people.
+    Returns list of (start_time, end_time, quality_score) tuples.
+    Quality score: 1.0 per person with regular availability, 0.9 per person with if-needed only.
+    """
     options = []
     for time_in_minutes in range(0, MINUTES_PER_WEEK, time_increment):
         block_is_valid = True
+        quality_score = 0.0
+
         for offset in range(0, meeting_length, time_increment):
             check_time = time_in_minutes + offset
-            if not all(_is_available_at_time(p, check_time, use_if_needed) for p in people):
-                block_is_valid = False
+            slot_score = 0.0
+
+            for person in people:
+                regular_available = any(start <= check_time < end for start, end in person.intervals)
+                if regular_available:
+                    slot_score += 1.0
+                elif use_if_needed and any(start <= check_time < end for start, end in person.if_needed_intervals):
+                    slot_score += 0.9
+                else:
+                    block_is_valid = False
+                    break
+
+            if not block_is_valid:
                 break
+
+            # Use minimum score across all time slots in this block
+            if offset == 0 or slot_score < quality_score:
+                quality_score = slot_score
+
         if block_is_valid:
-            options.append((time_in_minutes, time_in_minutes + meeting_length))
+            options.append((time_in_minutes, time_in_minutes + meeting_length, quality_score))
+
+    # Sort by quality score (prefer times with regular availability)
+    options.sort(key=lambda x: x[2], reverse=True)
     return options
 
 
@@ -249,51 +276,69 @@ def _run_greedy_iteration(
         return [g for g in new_groups if len(g.people) >= min_people]
 
 
+def _get_group_quality(people: list, meeting_length: int, time_increment: int, use_if_needed: bool) -> float:
+    """Get the best quality score for a group (higher = fewer if-needed times used)."""
+    if not people:
+        return 0.0
+    options = find_meeting_times(people, meeting_length, time_increment, use_if_needed)
+    return options[0][2] if options else float('-inf')
+
+
 def balance_groups(
     groups: list,
     meeting_length: int,
     time_increment: int = 30,
     use_if_needed: bool = True
 ) -> int:
-    """Balance group sizes by moving people from larger to smaller groups."""
+    """Balance group sizes by moving people from larger to smaller groups.
+    Considers quality scores to prefer moves that minimize if-needed time usage."""
     if len(groups) < 2:
         return 0
 
     move_count = 0
-    improved = True
+    max_iterations = 500
 
-    while improved:
-        improved = False
+    for _ in range(max_iterations):
         groups.sort(key=lambda g: len(g.people), reverse=True)
 
-        if len(groups[0].people) - len(groups[-1].people) <= 1:
+        largest = groups[0]
+        smallest = groups[-1]
+
+        # Stop if groups are reasonably balanced
+        if len(largest.people) - len(smallest.people) <= 1:
             break
 
-        found_move = False
-        for source_idx in range(len(groups)):
-            if found_move:
-                break
-            source_group = groups[source_idx]
+        # Find the best move considering quality scores
+        best_move = None
+        best_score = float('-inf')
 
-            for target_idx in range(len(groups) - 1, source_idx, -1):
-                if found_move:
-                    break
-                target_group = groups[target_idx]
+        for target_idx in range(len(groups) - 1, 0, -1):
+            target = groups[target_idx]
 
-                if len(source_group.people) <= len(target_group.people):
-                    continue
+            if len(largest.people) <= len(target.people) + 1:
+                continue
 
-                for i, person in enumerate(source_group.people):
-                    test_people = target_group.people + [person]
-                    if is_group_valid(test_people, meeting_length, time_increment, use_if_needed):
-                        source_group.people.pop(i)
-                        target_group.people.append(person)
-                        move_count += 1
-                        improved = True
-                        found_move = True
-                        break
+            for i, person in enumerate(largest.people):
+                new_target_people = target.people + [person]
 
-        if not found_move:
+                if is_group_valid(new_target_people, meeting_length, time_increment, use_if_needed):
+                    new_source_people = [p for j, p in enumerate(largest.people) if j != i]
+
+                    # Calculate quality impact
+                    new_source_quality = _get_group_quality(new_source_people, meeting_length, time_increment, use_if_needed)
+                    new_target_quality = _get_group_quality(new_target_people, meeting_length, time_increment, use_if_needed)
+                    move_score = new_source_quality + new_target_quality
+
+                    if move_score > best_score:
+                        best_score = move_score
+                        best_move = (i, target, person)
+
+        if best_move:
+            person_idx, target, person = best_move
+            largest.people.pop(person_idx)
+            target.people.append(person)
+            move_count += 1
+        else:
             break
 
     return move_count
@@ -336,10 +381,12 @@ def schedule(
         SchedulingResult with groups, unassigned people, and stats
     """
     if not people:
-        return SchedulingResult(groups=[], unassigned=[], score=0, iterations_run=0, best_iteration=-1)
+        return SchedulingResult(groups=[], unassigned=[], score=0, quality_score=0.0, if_needed_count=0, iterations_run=0, best_iteration=-1)
 
     best_solution = None
     best_score = -1
+    best_quality_score = -1.0
+    best_if_needed_count = 0
     best_iteration = -1
     total_people = len(people)
 
@@ -349,13 +396,39 @@ def schedule(
             time_increment, randomness, use_if_needed, facilitator_ids, facilitator_max_cohorts
         )
 
-        score = sum(len(g.people) for g in solution)
+        # Calculate quality score and if-needed count for this solution
+        people_count = 0
+        quality_score = 0.0
+        if_needed_count = 0
 
-        if score > best_score:
-            best_score = score
+        for group in solution:
+            options = find_meeting_times(group.people, meeting_length, time_increment, use_if_needed)
+            if options:
+                best_option = options[0]  # Already sorted by quality
+                people_count += len(group.people)
+                quality_score += best_option[2]  # quality_score is third element
+
+                # Count people using if-needed times for this group's best slot
+                for person in group.people:
+                    uses_regular = True
+                    for offset in range(0, meeting_length, time_increment):
+                        check_time = best_option[0] + offset
+                        if not any(start <= check_time < end for start, end in person.intervals):
+                            uses_regular = False
+                            break
+                    if not uses_regular:
+                        if_needed_count += 1
+
+        # Prefer solutions with higher quality score (fewer if-needed usages)
+        if quality_score > best_quality_score:
+            best_quality_score = quality_score
+            best_score = people_count
+            best_if_needed_count = if_needed_count
             best_solution = solution
             best_iteration = iteration
-            if best_score == total_people:
+
+            # Stop early if perfect solution (all people scheduled with regular availability)
+            if best_score == total_people and best_if_needed_count == 0:
                 break
 
         if progress_callback and iteration % 100 == 0:
@@ -368,7 +441,7 @@ def schedule(
         for group in best_solution:
             options = find_meeting_times(group.people, meeting_length, time_increment, use_if_needed)
             if options:
-                group.selected_time = options[0]
+                group.selected_time = (options[0][0], options[0][1])  # Just start and end time
         assigned_ids = {p.id for g in best_solution for p in g.people}
         unassigned = [p for p in people if p.id not in assigned_ids]
     else:
@@ -379,6 +452,8 @@ def schedule(
         groups=best_solution,
         unassigned=unassigned,
         score=best_score if best_score >= 0 else 0,
+        quality_score=best_quality_score if best_quality_score >= 0 else 0.0,
+        if_needed_count=best_if_needed_count,
         iterations_run=best_iteration + 1 if best_iteration >= 0 else 0,
         best_iteration=best_iteration
     )
