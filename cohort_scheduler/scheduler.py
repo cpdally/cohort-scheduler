@@ -288,10 +288,15 @@ def balance_groups(
     groups: list,
     meeting_length: int,
     time_increment: int = 30,
-    use_if_needed: bool = True
+    use_if_needed: bool = True,
+    facilitator_ids: set = None
 ) -> int:
     """Balance group sizes by moving people from larger to smaller groups.
-    Considers quality scores to prefer moves that minimize if-needed time usage."""
+    Considers quality scores to prefer moves that minimize if-needed time usage.
+
+    When facilitator_ids is provided, only non-facilitators are moved and the
+    one-facilitator-per-group invariant is enforced on every candidate move, so
+    balancing can never orphan a group (0 facilitators) or double one up."""
     if len(groups) < 2:
         return 0
 
@@ -319,9 +324,15 @@ def balance_groups(
                 continue
 
             for i, person in enumerate(largest.people):
+                # Never relocate a facilitator during balancing: moving one out
+                # would leave its group with zero facilitators, and moving one in
+                # would give the target two. Only participants are rebalanced.
+                if facilitator_ids and person.id in facilitator_ids:
+                    continue
+
                 new_target_people = target.people + [person]
 
-                if is_group_valid(new_target_people, meeting_length, time_increment, use_if_needed):
+                if is_group_valid(new_target_people, meeting_length, time_increment, use_if_needed, facilitator_ids):
                     new_source_people = [p for j, p in enumerate(largest.people) if j != i]
 
                     # Calculate quality impact
@@ -435,7 +446,7 @@ def schedule(
             progress_callback(iteration, num_iterations, best_score, total_people)
 
     if balance and best_solution and len(best_solution) >= 2:
-        balance_groups(best_solution, meeting_length, time_increment, use_if_needed)
+        balance_groups(best_solution, meeting_length, time_increment, use_if_needed, facilitator_ids)
 
     if best_solution:
         for group in best_solution:
